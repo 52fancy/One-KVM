@@ -1,239 +1,312 @@
-<div align="center">
-  <h1>One-KVM</h1>
-  <p><strong>Rust 编写的开放轻量 IP-KVM 解决方案，实现 BIOS 级远程管理</strong></p>
+# One-KVM 添加 frp (frpc) 内网穿透扩展 — 完整代码变更说明
 
-  <p><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
+## 概述
 
-  [![GitHub Release](https://img.shields.io/github/v/release/mofeng-git/One-KVM)](https://github.com/mofeng-git/One-KVM/releases)
-  [![GitHub stars](https://img.shields.io/github/stars/mofeng-git/One-KVM?style=social)](https://github.com/mofeng-git/One-KVM/stargazers)
-  [![GitHub forks](https://img.shields.io/github/forks/mofeng-git/One-KVM?style=social)](https://github.com/mofeng-git/One-KVM/network/members)
-  [![GitHub issues](https://img.shields.io/github/issues/mofeng-git/One-KVM)](https://github.com/mofeng-git/One-KVM/issues)
-</div>
+为 One-KVM 项目添加 frp 内网穿透客户端 (frpc) 作为新的 Extension，遵循现有 GOSTC / EasyTier 的实现模式，使用命令行参数（不使用配置文件），适配 frp v0.52+ 的 Cobra CLI 新格式。
 
 ---
 
-## 📖 项目概述
+## 一、Rust 后端修改（6 个文件）
 
-**One-KVM Rust** 是一个用 Rust 编写的轻量级 IP-KVM 解决方案，可通过网络远程管理服务器和工作站，实现 BIOS 级远程控制。
+### 1. `src/extensions/types.rs` — 类型定义
 
-项目目标：提供一个开放、轻量、易用的 IPKVM 解决方案。
+**新增枚举 FrpProxyType（7 种代理类型）：**
 
-- **开放**：不绑定特定硬件配置，可在各类硬件环境中稳定运行。
-- **轻量**：以二进制文件形式分发，无繁杂的依赖项，部署过程简单。
-- **易用**：无需手动编辑配置文件，参数设置均可通过网页界面完成。
-
-> **One-KVM Python** 已停止开发，如有需要可访问 <https://github.com/mofeng-git/One-KVM/tree/python>。
-
-<div align="center">
-
-![One-KVM Web 控制台界面](https://one-kvm.cn/hero-app-effect.png)
-
-</div>
-
-## 📊 功能介绍
-
-### 核心功能
-
-| 功能 | 能力说明 |
-|------|------|
-| 视频采集 | HDMI USB /MIPI CSI/RK3588 HDMI IN 采集支持，提供 MJPEG / WebRTC（H.264/H.265/VP8/VP9） 视频流|
-| 视频编码 | VAAPI/QSV/RKMPP/V4L2M2M 硬件编码支持，以及软件编码兜底 |
-| 键鼠控制 | USB OTG HID 或 CH340 + CH9329 HID，支持绝对/相对鼠标模式 |
-| 虚拟媒体 | USB Mass Storage，支持 ISO/IMG 镜像挂载和 Ventoy 虚拟U盘模式 |
-| ATX 电源控制 | GPIO /USB 继电器，支持控制电源、重启按钮 |
-| 音频传输 | ALSA 采集 + Opus 编码（HTTP/WebRTC） |
-
-此外提供基于 Web UI 的可视化配置与中英文界面；并集成 Web 终端（ttyd）、内网穿透（gostc）、P2P 组网（EasyTier）、RustDesk 协议（扩展跨平台远程访问）以及 RTSP 推流等能力。
-
-## ⚡ 安装使用
-
-构建产物见 [GitHub Releases](https://github.com/mofeng-git/One-KVM/releases)。以下为常见安装方式的简要步骤；**系统要求、硬件准备、Docker 环境变量与 USB OTG 等完整说明**请查阅 [One-KVM Rust 文档站点](https://docs.one-kvm.cn/)。
-
-### 使用 deb 安装（Debian / Ubuntu）
-
-从 Releases 下载与本机架构匹配的 `one-kvm_*.deb`，在包所在目录执行：
-
-```bash
-sudo apt update
-sudo apt install ./one-kvm_0.x.x_<arch>.deb
+```rust
+pub enum FrpProxyType {
+    Tcp,    // TCP 代理
+    Udp,    // UDP 代理
+    Http,   // HTTP 代理（支持自定义域名）
+    Https,  // HTTPS 代理（支持自定义域名）
+    Stcp,   // Secret TCP（加密 TCP）
+    Sudp,   // Secret UDP（加密 UDP）
+    Xtcp,   // P2P 直连模式
+}
 ```
 
-将文件名中的版本号与架构替换为实际下载的包名。
+**新增结构体 FrpcConfig：**
 
-### 使用 Docker
-
-镜像分为 **one-kvm**（One-KVM 主程序 + ttyd）与 **one-kvm-full**（另含 gostc、easytier-core 等可选扩展），按需选用。
-
-```bash
-docker run --name one-kvm -itd \
-  --privileged=true --restart unless-stopped \
-  -v /dev:/dev -v /sys:/sys \
-  --net=host \
-  silentwind0/one-kvm-full
+```rust
+pub struct FrpcConfig {
+    pub enabled: bool,               // 是否启用
+    pub proxy_name: String,          // 代理名称（-n 参数，必填，用户自定义）
+    pub proxy_type: FrpProxyType,    // 代理类型（子命令）
+    pub server_addr: String,         // frps 服务器地址（-s 参数）
+    pub server_port: u16,            // frps 端口（-P 参数，默认 7000）
+    pub token: String,               // 认证令牌（-t 参数）
+    pub local_ip: String,            // 本地转发 IP（-i 参数，默认 127.0.0.1）
+    pub local_port: u16,             // 本地端口（-l 参数，默认 8080）
+    pub remote_port: Option<u16>,    // 远程端口（-r 参数，可选，仅 TCP/UDP/STCP/SUDP/XTCP）
+    pub custom_domain: Option<String>, // 自定义域名（--domain 参数，可选，仅 HTTP/HTTPS）
+    pub tls: bool,                   // TLS 开关（--tls-enable 参数）
+}
 ```
 
-拉取较慢时，可将镜像名替换为阿里云加速，例如 `registry.cn-hangzhou.aliyuncs.com/silentwind/one-kvm-full`（`one-kvm` 镜像同理，将 `silentwind0/one-kvm` 换为 `registry.cn-hangzhou.aliyuncs.com/silentwind/one-kvm`）。
+**新增结构体 FrpcInfo：**
 
-### 飞牛 NAS
+```rust
+pub struct FrpcInfo {
+    pub available: bool,
+    pub status: ExtensionStatus,
+    pub config: FrpcConfig,
+}
+```
 
-One-KVM 已上架飞牛 **应用市场**，在 NAS 上直接搜索安装即可。
+**新增结构体 FrpcConfigUpdate（Partial Update，支持三种状态）：**
 
-### 访问 Web 与首次配置
-
-浏览器访问 `http://<设备 IP>:8080`（飞牛 NAS 安装后为 8420 端口）。首次访问将引导完成初始配置。
-
-## 报告问题
-
-如果您发现了问题，请：
-1. 使用 [GitHub Issues](https://github.com/mofeng-git/One-KVM/issues) 报告，或加入 QQ 群聊反馈。
-2. 提供有帮助的错误信息和复现步骤
-3. 包含您使用的软件版本、硬件配置和系统信息
-
-## 赞助支持
-
-本项目基于多个优秀开源项目进行二次开发，作者投入了大量时间进行测试和维护。如果您觉得这个项目有价值，欢迎通过 **[为爱发电](https://afdian.com/a/silentwind)** 支持项目发展。
-
-### 感谢名单
-
-<details>
-<summary><strong>点击查看感谢名单</strong></summary>
-
-- 浩龙的电子嵌入式之路
-
-- Tsuki
-
-- H_xiaoming
-
-- 0蓝蓝0
-
-- fairybl
-
-- Will
-
-- 自.知
-
-- 观棋不语٩ ི۶
-
-- 爱发电用户_a57a4
-
-- 爱发电用户_2c769
-
-- 霜序
-
-- 远方（闲鱼用户名：小远技术店铺）
-
-- 爱发电用户_399fc
-
-- 斐斐の
-
-- 爱发电用户_09451
-
-- 超高校级的錆鱼
-
-- 爱发电用户_08cff
-
-- guoke
-
-- mgt
-
-- 姜沢掵
-
-- ui_beam
-
-- 爱发电用户_c0dd7
-
-- 爱发电用户_dnjK
-
-- 忍者胖猪
-
-- 永遠の願い
-
-- 爱发电用户_GBrF
-
-- 爱发电用户_fd65c
-
-- 爱发电用户_vhNa
-
-- 爱发电用户_Xu6S
-
-- moss
-
-- woshididi
-
-- 爱发电用户_a0fd1
-
-- 爱发电用户_f6bH
-
-- 码农
-
-- 爱发电用户_6639f
-
-- jeron
-
-- 爱发电用户_CN7y
-
-- 爱发电用户_Up6w
-
-- 爱发电用户_e3202
-
-- 一语念白
-
-- 云边
-
-- 爱发电用户_5a711
-
-- 爱发电用户_9a706
-
-- T0m9ir1SUKI
-
-- 爱发电用户_56d52
-
-- 爱发电用户_3N6F
-
-- DUSK
-
-- 飘零
-
-- .
-
-- 饭太稀
-
-- 葱
-
-- MaxZ
-
-- 爱发电用户_c5f33
-
-- 爱发电用户_09386
-
-- 爱发电用户_JT6c
-
-- 爱发电用户_d3d9c
-
-- ......
-
-</details>
-
-### 赞助商
-
-本项目得到以下赞助商的支持：
-
-**镜像下载服务：**
-- **[重庆大学开源软件镜像站](https://mirrors.cqu.edu.cn/)** - 提供镜像站下载服务
-
-**文件存储服务：**
-- **[Huang1111公益计划](https://pan.huang1111.cn/s/mxkx3T1)** - 提供免登录下载服务
-
-**云服务商**
-
-- **[林枫云](https://www.dkdun.cn)** - 赞助了本项目服务器
-
-  <img  height="128" alt="林枫云" src="https://docs.one-kvm.cn/img/36076FEFF0898A80EBD5756D28F4076C.png" />
-
-  林枫云主营国内外地域的精品线路业务服务器、高主频游戏服务器和大带宽服务器。
-
-- **[贝塔网络](https://my.beita.cc/?ref=github_onekvm)** - 赞助了本项目服务器
-
-  <img height="128" alt="BTBT" src="https://github.com/user-attachments/assets/c442d5f5-d72f-4a07-b9f4-400a6a0c3f1e" />
-
-  远程电脑、消费级GPU服务器、独服物理机，全自动在线交付。
+```rust
+pub struct FrpcConfigUpdate {
+    pub enabled: Option<bool>,
+    pub proxy_name: Option<String>,
+    pub proxy_type: Option<FrpProxyType>,
+    pub server_addr: Option<String>,
+    pub server_port: Option<u16>,
+    pub token: Option<String>,
+    pub local_ip: Option<String>,
+    pub local_port: Option<u16>,
+    pub remote_port: Option<Option<u16>>,      // Option<Option>：不修改/设置值/清空
+    pub custom_domain: Option<Option<String>>, // Option<Option>：不修改/设置值/清空
+    pub tls: Option<bool>,
+}
+```
+
+> 注意：`remote_port` 和 `custom_domain` 使用 `Option<Option<T>>`，外层 None 表示不修改该字段，内层 None 表示清空该值。
+
+**修改已有类型：**
+
+| 类型 | 修改内容 |
+|------|---------|
+| `ExtensionId` | 新增 `Frpc` 变体（Display: `"frpc"`，FromStr: `"frpc"`） |
+| `ExtensionId::all()` | 返回数组新增 `Self::Frpc` |
+| `ExtensionsConfig` | 新增 `pub frpc: FrpcConfig` 字段 |
+| `ExtensionsStatus` | 新增 `pub frpc: FrpcInfo` 字段 |
+
+### 2. `src/extensions/manager.rs` — 进程管理
+
+**修改位置：is_enabled_for_config、build_args、redact_args_for_log**
+
+is_enabled_for_config 新增 Frpc 分支：
+```
+enabled && server_addr 非空 && token 非空
+```
+
+build_args 新增 Frpc 分支（完整参数构建逻辑）：
+
+| Config 字段 | CLI 参数 | 条件 |
+|------------|---------|------|
+| proxy_type | 子命令位置参数 | 必填 |
+| proxy_name | -n | 必填 |
+| server_addr | -s | 必填 |
+| server_port | -P | 必填 |
+| token | -t | 必填（日志脱敏） |
+| local_ip | -i | 必填 |
+| local_port | -l | 必填 |
+| remote_port | -r | 仅 TCP/UDP/STCP/SUDP/XTCP |
+| custom_domain | --domain | 仅 HTTP/HTTPS |
+| tls | --tls-enable | flag 型 |
+
+redact_args_for_log 增脱敏：新增对 `-t` / `--token` 参数的 `****` 脱敏处理
+
+### 3. `src/extensions/software_linux.rs` — Linux 二进制路径
+
+```
+ExtensionId::Frpc => "/usr/bin/frpc"
+```
+
+### 4. `src/extensions/software_windows.rs` — Windows 二进制路径
+
+```
+ExtensionId::Frpc => "frpc.exe"
+```
+
+### 5. `src/web/handlers/extensions.rs` — API 处理器
+
+新增：
+- `validate_frpc_enabled()` — 校验 proxy_name / server_addr / token 必填
+- `FrpcConfigUpdate` 结构体（请求体）
+- `update_frpc_config()` — Partial Update 合并 + 校验 + 自动启停
+- `list_extensions()` 新增 frpc 信息返回
+
+### 6. `src/web/routes.rs` — API 路由
+
+```
+PATCH /api/extensions/frpc/config → update_frpc_config
+```
+
+---
+
+## 二、前端 Web UI 修改（5 个文件）
+
+### 1. `web/src/types/generated.ts` — TypeScript 类型定义
+
+新增 `FrpProxyType` 枚举、`FrpcConfig`、`FrpcInfo`、`FrpcConfigUpdate` 接口。
+
+修改 `ExtensionsConfig`、`ExtensionsStatus`、`ExtensionId`。
+
+### 2. `web/src/api/config.ts` — API 调用
+
+extensionsApi 新增 `updateFrpc(config: FrpcConfigUpdate)` 方法。
+
+### 3. `web/src/views/SettingsView.vue` — 设置页面
+
+共 15 处修改：
+
+1. 导入 `FrpProxyType`（值导入，非 type import）
+2. 不新增独立导航入口（FRPC 放在"远程访问"页面内）
+3. `sectionSubtitleKey` / `loadSectionData` 添加 ext-frpc case
+4. `extensionLogs` / `showLogs` / `extConfig` 添加 frpc 数据
+5. `frpcValidationMessage` 计算属性（校验 proxy_name、server_addr、token）
+6. `showFrpcRemotePort` / `showFrpcCustomDomain` 条件显示计算属性
+7. `loadExtensions` 添加 frpc 加载
+8. 所有 extension 操作函数类型签名扩展为包含 'frpc'
+9. `validateExtensionConfig` 添加 frpc 分支
+10. FRPC UI 卡片（放在 ext-remote-access 页内，GOSTC/EasyTier 之后）：
+    - 状态指示器 + 启动/停止按钮
+    - 自动启动开关
+    - 代理类型 RadioGroup（7 种类型）
+    - 代理名称输入框（必填，含校验提示）
+    - 服务器地址 + 端口
+    - Token 密码输入框（必填，含校验提示）
+    - 本地 IP + 端口
+    - 远程端口（条件显示：TCP/UDP/STCP/SUDP/XTCP）
+    - 自定义域名（条件显示：HTTP/HTTPS）
+    - TLS 开关
+    - 日志查看（可折叠，支持刷新）
+11. 保存按钮
+
+### 4-5. `web/src/i18n/en-US.ts` 和 `zh-CN.ts` — 国际化
+
+新增约 20 条翻译 key：
+
+| Key | en-US | zh-CN |
+|-----|-------|-------|
+| extensions.frpc.title | FRP Client | FRP 客户端 |
+| extensions.frpc.desc | NAT penetration via FRP (frpc) | 通过 FRP (frpc) 实现内网穿透 |
+| extensions.frpc.proxyType | Proxy Type | 代理类型 |
+| extensions.frpc.proxyName | Proxy Name | 代理名称 |
+| extensions.frpc.proxyNamePlaceholder | my-proxy | my-proxy |
+| extensions.frpc.proxyNameRequired | Enter a proxy name | 请填写代理名称 |
+| extensions.frpc.serverAddr | Server Address | 服务器地址 |
+| extensions.frpc.serverAddrPlaceholder | frps.example.com | frps.example.com |
+| extensions.frpc.serverAddrRequired | Enter the FRP server address | 请填写 FRP 服务器地址 |
+| extensions.frpc.serverPort | Server Port | 服务器端口 |
+| extensions.frpc.token | Token | Token 密钥 |
+| extensions.frpc.tokenRequired | Enter the FRP authentication token | 请填写 FRP 认证 Token |
+| extensions.frpc.localIp | Local IP | 本地 IP |
+| extensions.frpc.localPort | Local Port | 本地端口 |
+| extensions.frpc.remotePort | Remote Port | 远程端口 |
+| extensions.frpc.remotePortHint | Optional. Random if not specified | 可选，不填则随机分配 |
+| extensions.frpc.customDomain | Custom Domain | 自定义域名 |
+| extensions.frpc.customDomainPlaceholder | example.com | example.com |
+| extensions.frpc.tls | Enable TLS | 启用 TLS |
+| extFrpcSubtitle | NAT penetration via FRP client | 通过 FRP 客户端实现内网穿透 |
+
+---
+
+## 三、frpc 命令行参数映射（frp v0.52+ Cobra CLI）
+
+```bash
+frpc <proxy_type> [flags]
+```
+
+| FrpcConfig 字段 | CLI 参数 | 类型 | 说明 | 适用代理类型 |
+|---|---|---|---|---|
+| proxy_type | 子命令 | — | tcp/udp/http/https/stcp/sudp/xtcp | 全部 |
+| proxy_name | -n / --proxy-name | String | 代理名称，必填，用户自定义 | 全部 |
+| server_addr | -s / --server-addr | String | frps 地址，默认 127.0.0.1 | 全部 |
+| server_port | -P / --server-port | Int | frps 端口，默认 7000 | 全部 |
+| token | -t / --token | String | 认证令牌，日志脱敏 | 全部 |
+| local_ip | -i / --local-ip | String | 本地 IP，默认 127.0.0.1 | 全部 |
+| local_port | -l / --local-port | Int | 本地端口 | 全部 |
+| remote_port | -r / --remote-port | Int | 远程端口，可选 | TCP/UDP/STCP/SUDP/XTCP |
+| custom_domain | --domain | String | 自定义域名，可选 | HTTP/HTTPS |
+| tls | --tls-enable | Flag | 启用 TLS，默认 true | 全部 |
+
+### 命令示例
+
+```bash
+# TCP 代理（指定远程端口）
+frpc tcp -n my-kvm -s frps.example.com -P 7000 -t xxx \
+    -i 192.168.1.100 -l 22 -r 6000 --tls-enable
+
+# HTTP 代理（自定义域名）
+frpc http -n my-web -s frps.example.com -P 7000 -t xxx \
+    -i 127.0.0.1 -l 8080 --domain example.com
+
+# 不指定远程端口，由 frps 自动分配
+frpc tcp -n my-ssh -s frps.example.com -P 7000 -t xxx \
+    -i 127.0.0.1 -l 22
+```
+
+---
+
+## 四、文件清单
+
+```
+One-KVM-frpc/
+├── README.md                       # 本文件（完整变更说明）
+├── One-KVM-frpc-changes.diff       # Git diff 补丁
+├── src/
+│   ├── extensions/
+│   │   ├── types.rs                # 修改：新增 Frpc 类型定义
+│   │   ├── manager.rs              # 修改：新增 Frpc 进程管理
+│   │   ├── software_linux.rs       # 修改：新增 frpc 路径
+│   │   └── software_windows.rs     # 修改：新增 frpc.exe 路径
+│   └── web/
+│       ├── routes.rs               # 修改：新增 frpc/config 路由
+│       └── handlers/
+│           └── extensions.rs       # 修改：新增 Frpc handler
+└── web/
+    └── src/
+        ├── api/
+        │   └── config.ts           # 修改：新增 updateFrpc API
+        ├── i18n/
+        │   ├── en-US.ts            # 修改：新增英文翻译
+        │   └── zh-CN.ts            # 修改：新增中文翻译
+        ├── types/
+        │   └── generated.ts        # 修改：新增 Frpc TypeScript 类型
+        └── views/
+            └── SettingsView.vue    # 修改：新增 FRPC UI
+```
+
+---
+
+## 五、设计决策
+
+| # | 决策 | 说明 |
+|---|------|------|
+| 1 | 纯命令行参数 | 不生成 frpc.toml 配置文件，与 GOSTC/EasyTier 保持一致 |
+| 2 | frp v0.52+ Cobra CLI | 子命令模式（`frpc tcp` 而非 `frpc -t tcp`） |
+| 3 | 条件字段显示 | remote_port 仅 TCP/UDP/STCP/SUDP/XTCP 显示；custom_domain 仅 HTTP/HTTPS 显示 |
+| 4 | 安全性 | Token 日志脱敏 + 前端密码输入框 |
+| 5 | proxy_name 用户自定义 | 不由系统生成固定值，用户自行填写 |
+| 6 | Partial Update | remote_port/custom_domain 用 Option<Option<T>> 支持不修改/设置/清空三种状态 |
+| 7 | 向后兼容 | 不影响原有 Ttyd/Gostc/Easytier |
+| 8 | UI 位置 | FRPC 放在「远程访问」页面，与 GOSTC、EasyTier 并列 |
+
+---
+
+## 六、部署
+
+1. 部署 frpc 二进制：
+   - Linux: `/usr/bin/frpc`
+   - Windows: `frpc.exe`（与 one-kvm.exe 同目录）
+2. 复制修改文件到项目对应目录
+3. 重新编译：`cd web && npm ci && npm run build && cd .. && cargo build --release`
+
+## 七、API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/extensions | 获取所有扩展状态（含 frpc） |
+| GET | /api/extensions/frpc | 获取 frpc 状态 |
+| POST | /api/extensions/frpc/start | 启动 frpc |
+| POST | /api/extensions/frpc/stop | 停止 frpc |
+| GET | /api/extensions/frpc/logs | 获取日志 |
+| PATCH | /api/extensions/frpc/config | 更新配置 |
+
+## 八、相关资源
+
+- [frp GitHub](https://github.com/fatedier/frp)
+- [frp 文档](https://gofrp.org/)
+- [One-KVM 项目](https://github.com/mofeng-git/One-KVM)

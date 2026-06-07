@@ -9,7 +9,7 @@ use typeshare::typeshare;
 use crate::error::{AppError, Result};
 use crate::extensions::{
     EasytierConfig, EasytierInfo, ExtensionId, ExtensionInfo, ExtensionLogs, ExtensionsStatus,
-    GostcConfig, GostcInfo, TtydConfig, TtydInfo,
+    FrpcConfig, FrpcConfigUpdate, FrpcInfo, GostcConfig, GostcInfo, TtydConfig, TtydInfo,
 };
 use crate::state::AppState;
 
@@ -34,6 +34,23 @@ fn validate_easytier_enabled(config: &EasytierConfig) -> Result<()> {
     Ok(())
 }
 
+fn validate_frpc_enabled(config: &FrpcConfig) -> Result<()> {
+    if config.proxy_name.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "FRP proxy name is required".into(),
+        ));
+    }
+    if config.server_addr.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "FRP server address is required".into(),
+        ));
+    }
+    if config.token.is_empty() {
+        return Err(AppError::BadRequest("FRP token is required".into()));
+    }
+    Ok(())
+}
+
 pub async fn list_extensions(State(state): State<Arc<AppState>>) -> Json<ExtensionsStatus> {
     let config = state.config.get();
     let mgr = &state.extensions;
@@ -53,6 +70,11 @@ pub async fn list_extensions(State(state): State<Arc<AppState>>) -> Json<Extensi
             available: mgr.check_available(ExtensionId::Easytier),
             status: mgr.status(ExtensionId::Easytier).await,
             config: config.extensions.easytier.clone(),
+        },
+        frpc: FrpcInfo {
+            available: mgr.check_available(ExtensionId::Frpc),
+            status: mgr.status(ExtensionId::Frpc).await,
+            config: config.extensions.frpc.clone(),
         },
     })
 }
@@ -294,4 +316,73 @@ pub async fn update_easytier_config(
     }
 
     Ok(Json(new_config.extensions.easytier.clone()))
+}
+
+pub async fn update_frpc_config(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<FrpcConfigUpdate>,
+) -> Result<Json<FrpcConfig>> {
+    let current_config = state.config.get();
+    let was_enabled = current_config.extensions.frpc.enabled;
+    let mut next_frpc = current_config.extensions.frpc.clone();
+
+    if let Some(enabled) = req.enabled {
+        next_frpc.enabled = enabled;
+    }
+    if let Some(ref proxy_name) = req.proxy_name {
+        next_frpc.proxy_name = proxy_name.clone();
+    }
+    if let Some(proxy_type) = req.proxy_type {
+        next_frpc.proxy_type = proxy_type;
+    }
+    if let Some(ref server_addr) = req.server_addr {
+        next_frpc.server_addr = server_addr.clone();
+    }
+    if let Some(server_port) = req.server_port {
+        next_frpc.server_port = server_port;
+    }
+    if let Some(ref token) = req.token {
+        next_frpc.token = token.clone();
+    }
+    if let Some(ref local_ip) = req.local_ip {
+        next_frpc.local_ip = local_ip.clone();
+    }
+    if let Some(local_port) = req.local_port {
+        next_frpc.local_port = local_port;
+    }
+    if req.remote_port.is_some() {
+        next_frpc.remote_port = req.remote_port.unwrap_or(None);
+    }
+    if req.custom_domain.is_some() {
+        next_frpc.custom_domain = req.custom_domain.unwrap_or(None);
+    }
+    if let Some(tls) = req.tls {
+        next_frpc.tls = tls;
+    }
+
+    if next_frpc.enabled {
+        validate_frpc_enabled(&next_frpc)?;
+    }
+
+    state
+        .config
+        .update(|config| {
+            config.extensions.frpc = next_frpc.clone();
+        })
+        .await?;
+
+    let new_config = state.config.get();
+    let is_enabled = new_config.extensions.frpc.enabled;
+
+    if was_enabled && !is_enabled {
+        state.extensions.stop(ExtensionId::Frpc).await.ok();
+    } else if !was_enabled && is_enabled && state.extensions.check_available(ExtensionId::Frpc) {
+        state
+            .extensions
+            .start(ExtensionId::Frpc, &new_config.extensions)
+            .await
+            .ok();
+    }
+
+    Ok(Json(new_config.extensions.frpc.clone()))
 }

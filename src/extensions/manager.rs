@@ -82,6 +82,11 @@ impl ExtensionManager {
             ExtensionId::Easytier => {
                 config.easytier.enabled && !config.easytier.network_name.is_empty()
             }
+            ExtensionId::Frpc => {
+                config.frpc.enabled
+                    && !config.frpc.server_addr.trim().is_empty()
+                    && !config.frpc.token.is_empty()
+            }
         }
     }
 
@@ -316,6 +321,72 @@ impl ExtensionManager {
 
                 Ok(args)
             }
+
+            ExtensionId::Frpc => {
+                let c = &config.frpc;
+                if c.proxy_name.trim().is_empty() {
+                    return Err("FRP proxy name is required".into());
+                }
+                if c.server_addr.trim().is_empty() {
+                    return Err("FRP server address is required".into());
+                }
+                if c.token.is_empty() {
+                    return Err("FRP token is required".into());
+                }
+
+                let proxy_type_str = match c.proxy_type {
+                    FrpProxyType::Tcp => "tcp",
+                    FrpProxyType::Udp => "udp",
+                    FrpProxyType::Http => "http",
+                    FrpProxyType::Https => "https",
+                    FrpProxyType::Stcp => "stcp",
+                    FrpProxyType::Sudp => "sudp",
+                    FrpProxyType::Xtcp => "xtcp",
+                };
+
+                let mut args = vec![
+                    proxy_type_str.to_string(),
+                    "-n".to_string(),
+                    c.proxy_name.trim().to_string(),
+                    "-s".to_string(),
+                    c.server_addr.trim().to_string(),
+                    "-P".to_string(),
+                    c.server_port.to_string(),
+                    "-t".to_string(),
+                    c.token.clone(),
+                    "-i".to_string(),
+                    c.local_ip.clone(),
+                    "-l".to_string(),
+                    c.local_port.to_string(),
+                ];
+
+                let needs_remote_port = matches!(
+                    c.proxy_type,
+                    FrpProxyType::Tcp
+                        | FrpProxyType::Udp
+                        | FrpProxyType::Stcp
+                        | FrpProxyType::Sudp
+                        | FrpProxyType::Xtcp
+                );
+                if needs_remote_port {
+                    if let Some(rp) = c.remote_port {
+                        args.extend(["-r".to_string(), rp.to_string()]);
+                    }
+                }
+
+                let is_http = matches!(c.proxy_type, FrpProxyType::Http | FrpProxyType::Https);
+                if is_http {
+                    if let Some(ref domain) = c.custom_domain {
+                        args.extend(["--domain".to_string(), domain.clone()]);
+                    }
+                }
+
+                if c.tls {
+                    args.push("--tls-enable".to_string());
+                }
+
+                Ok(args)
+            }
         }
     }
 
@@ -367,11 +438,11 @@ impl ExtensionManager {
                 continue;
             }
 
-            if arg == "-key" || arg == "--key" {
+            if arg == "-key" || arg == "--key" || arg == "-t" || arg == "--token" {
                 redacted.push(arg.clone());
                 redact_next = true;
             } else if let Some((flag, _)) = arg.split_once('=') {
-                if flag == "-key" || flag == "--key" {
+                if flag == "-key" || flag == "--key" || flag == "-t" || flag == "--token" {
                     redacted.push(format!("{}=****", flag));
                 } else {
                     redacted.push(arg.clone());

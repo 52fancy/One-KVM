@@ -1,0 +1,890 @@
+diff --git a/src/extensions/manager.rs b/src/extensions/manager.rs
+index a1474e4d..7fc15213 100644
+--- a/src/extensions/manager.rs
++++ b/src/extensions/manager.rs
+@@ -82,6 +82,11 @@ impl ExtensionManager {
+             ExtensionId::Easytier => {
+                 config.easytier.enabled && !config.easytier.network_name.is_empty()
+             }
++            ExtensionId::Frpc => {
++                config.frpc.enabled
++                    && !config.frpc.server_addr.trim().is_empty()
++                    && !config.frpc.token.is_empty()
++            }
+         }
+     }
+ 
+@@ -316,6 +321,72 @@ impl ExtensionManager {
+ 
+                 Ok(args)
+             }
++
++            ExtensionId::Frpc => {
++                let c = &config.frpc;
++                if c.proxy_name.trim().is_empty() {
++                    return Err("FRP proxy name is required".into());
++                }
++                if c.server_addr.trim().is_empty() {
++                    return Err("FRP server address is required".into());
++                }
++                if c.token.is_empty() {
++                    return Err("FRP token is required".into());
++                }
++
++                let proxy_type_str = match c.proxy_type {
++                    FrpProxyType::Tcp => "tcp",
++                    FrpProxyType::Udp => "udp",
++                    FrpProxyType::Http => "http",
++                    FrpProxyType::Https => "https",
++                    FrpProxyType::Stcp => "stcp",
++                    FrpProxyType::Sudp => "sudp",
++                    FrpProxyType::Xtcp => "xtcp",
++                };
++
++                let mut args = vec![
++                    proxy_type_str.to_string(),
++                    "-n".to_string(),
++                    c.proxy_name.trim().to_string(),
++                    "-s".to_string(),
++                    c.server_addr.trim().to_string(),
++                    "-P".to_string(),
++                    c.server_port.to_string(),
++                    "-t".to_string(),
++                    c.token.clone(),
++                    "-i".to_string(),
++                    c.local_ip.clone(),
++                    "-l".to_string(),
++                    c.local_port.to_string(),
++                ];
++
++                let needs_remote_port = matches!(
++                    c.proxy_type,
++                    FrpProxyType::Tcp
++                        | FrpProxyType::Udp
++                        | FrpProxyType::Stcp
++                        | FrpProxyType::Sudp
++                        | FrpProxyType::Xtcp
++                );
++                if needs_remote_port {
++                    if let Some(rp) = c.remote_port {
++                        args.extend(["-r".to_string(), rp.to_string()]);
++                    }
++                }
++
++                let is_http = matches!(c.proxy_type, FrpProxyType::Http | FrpProxyType::Https);
++                if is_http {
++                    if let Some(ref domain) = c.custom_domain {
++                        args.extend(["--domain".to_string(), domain.clone()]);
++                    }
++                }
++
++                if c.tls {
++                    args.push("--tls-enable".to_string());
++                }
++
++                Ok(args)
++            }
+         }
+     }
+ 
+@@ -367,11 +438,11 @@ impl ExtensionManager {
+                 continue;
+             }
+ 
+-            if arg == "-key" || arg == "--key" {
++            if arg == "-key" || arg == "--key" || arg == "-t" || arg == "--token" {
+                 redacted.push(arg.clone());
+                 redact_next = true;
+             } else if let Some((flag, _)) = arg.split_once('=') {
+-                if flag == "-key" || flag == "--key" {
++                if flag == "-key" || flag == "--key" || flag == "-t" || flag == "--token" {
+                     redacted.push(format!("{}=****", flag));
+                 } else {
+                     redacted.push(arg.clone());
+diff --git a/src/extensions/software_linux.rs b/src/extensions/software_linux.rs
+index a3757c79..ec4e7926 100644
+--- a/src/extensions/software_linux.rs
++++ b/src/extensions/software_linux.rs
+@@ -7,6 +7,7 @@ pub fn default_binary_path(id: ExtensionId) -> &'static str {
+         ExtensionId::Ttyd => "/usr/bin/ttyd",
+         ExtensionId::Gostc => "/usr/bin/gostc",
+         ExtensionId::Easytier => "/usr/bin/easytier-core",
++        ExtensionId::Frpc => "/usr/bin/frpc",
+     }
+ }
+ 
+diff --git a/src/extensions/software_windows.rs b/src/extensions/software_windows.rs
+index 74f67a90..4e2f45a4 100644
+--- a/src/extensions/software_windows.rs
++++ b/src/extensions/software_windows.rs
+@@ -7,6 +7,7 @@ pub fn default_binary_path(id: ExtensionId) -> &'static str {
+         ExtensionId::Ttyd => "ttyd.win32.exe",
+         ExtensionId::Gostc => "gostc.exe",
+         ExtensionId::Easytier => "easytier-core.exe",
++        ExtensionId::Frpc => "frpc.exe",
+     }
+ }
+ 
+diff --git a/src/extensions/types.rs b/src/extensions/types.rs
+index 527e63ae..e0ed55ab 100644
+--- a/src/extensions/types.rs
++++ b/src/extensions/types.rs
+@@ -10,6 +10,7 @@ pub enum ExtensionId {
+     Ttyd,
+     Gostc,
+     Easytier,
++    Frpc,
+ }
+ 
+ impl ExtensionId {
+@@ -18,7 +19,7 @@ impl ExtensionId {
+     }
+ 
+     pub fn all() -> &'static [ExtensionId] {
+-        &[Self::Ttyd, Self::Gostc, Self::Easytier]
++        &[Self::Ttyd, Self::Gostc, Self::Easytier, Self::Frpc]
+     }
+ }
+ 
+@@ -28,6 +29,7 @@ impl std::fmt::Display for ExtensionId {
+             Self::Ttyd => write!(f, "ttyd"),
+             Self::Gostc => write!(f, "gostc"),
+             Self::Easytier => write!(f, "easytier"),
++            Self::Frpc => write!(f, "frpc"),
+         }
+     }
+ }
+@@ -40,6 +42,7 @@ impl std::str::FromStr for ExtensionId {
+             "ttyd" => Ok(Self::Ttyd),
+             "gostc" => Ok(Self::Gostc),
+             "easytier" => Ok(Self::Easytier),
++            "frpc" => Ok(Self::Frpc),
+             _ => Err(format!("Unknown extension: {}", s)),
+         }
+     }
+@@ -114,6 +117,71 @@ pub struct EasytierConfig {
+     pub virtual_ip: Option<String>,
+ }
+ 
++#[typeshare]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum FrpProxyType {
++    Tcp,
++    Udp,
++    Http,
++    Https,
++    Stcp,
++    Sudp,
++    Xtcp,
++}
++
++#[typeshare]
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(default)]
++pub struct FrpcConfig {
++    pub enabled: bool,
++    pub proxy_name: String,
++    pub proxy_type: FrpProxyType,
++    pub server_addr: String,
++    pub server_port: u16,
++    #[serde(skip_serializing_if = "String::is_empty")]
++    pub token: String,
++    pub local_ip: String,
++    pub local_port: u16,
++    pub remote_port: Option<u16>,
++    pub custom_domain: Option<String>,
++    pub tls: bool,
++}
++
++impl Default for FrpcConfig {
++    fn default() -> Self {
++        Self {
++            enabled: false,
++            proxy_name: String::new(),
++            proxy_type: FrpProxyType::Tcp,
++            server_addr: String::new(),
++            server_port: 7000,
++            token: String::new(),
++            local_ip: String::from("127.0.0.1"),
++            local_port: 8080,
++            remote_port: None,
++            custom_domain: None,
++            tls: true,
++        }
++    }
++}
++
++#[typeshare]
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct FrpcConfigUpdate {
++    pub enabled: Option<bool>,
++    pub proxy_name: Option<String>,
++    pub proxy_type: Option<FrpProxyType>,
++    pub server_addr: Option<String>,
++    pub server_port: Option<u16>,
++    pub token: Option<String>,
++    pub local_ip: Option<String>,
++    pub local_port: Option<u16>,
++    pub remote_port: Option<Option<u16>>,
++    pub custom_domain: Option<Option<String>>,
++    pub tls: Option<bool>,
++}
++
+ #[typeshare]
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ #[serde(default)]
+@@ -121,6 +189,7 @@ pub struct ExtensionsConfig {
+     pub ttyd: TtydConfig,
+     pub gostc: GostcConfig,
+     pub easytier: EasytierConfig,
++    pub frpc: FrpcConfig,
+ }
+ 
+ #[typeshare]
+@@ -154,12 +223,21 @@ pub struct EasytierInfo {
+     pub config: EasytierConfig,
+ }
+ 
++#[typeshare]
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct FrpcInfo {
++    pub available: bool,
++    pub status: ExtensionStatus,
++    pub config: FrpcConfig,
++}
++
+ #[typeshare]
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct ExtensionsStatus {
+     pub ttyd: TtydInfo,
+     pub gostc: GostcInfo,
+     pub easytier: EasytierInfo,
++    pub frpc: FrpcInfo,
+ }
+ 
+ #[typeshare]
+diff --git a/src/web/handlers/extensions.rs b/src/web/handlers/extensions.rs
+index 2e7ee8c9..63cd7cfc 100644
+--- a/src/web/handlers/extensions.rs
++++ b/src/web/handlers/extensions.rs
+@@ -9,7 +9,7 @@ use typeshare::typeshare;
+ use crate::error::{AppError, Result};
+ use crate::extensions::{
+     EasytierConfig, EasytierInfo, ExtensionId, ExtensionInfo, ExtensionLogs, ExtensionsStatus,
+-    GostcConfig, GostcInfo, TtydConfig, TtydInfo,
++    FrpcConfig, FrpcConfigUpdate, FrpcInfo, GostcConfig, GostcInfo, TtydConfig, TtydInfo,
+ };
+ use crate::state::AppState;
+ 
+@@ -34,6 +34,23 @@ fn validate_easytier_enabled(config: &EasytierConfig) -> Result<()> {
+     Ok(())
+ }
+ 
++fn validate_frpc_enabled(config: &FrpcConfig) -> Result<()> {
++    if config.proxy_name.trim().is_empty() {
++        return Err(AppError::BadRequest(
++            "FRP proxy name is required".into(),
++        ));
++    }
++    if config.server_addr.trim().is_empty() {
++        return Err(AppError::BadRequest(
++            "FRP server address is required".into(),
++        ));
++    }
++    if config.token.is_empty() {
++        return Err(AppError::BadRequest("FRP token is required".into()));
++    }
++    Ok(())
++}
++
+ pub async fn list_extensions(State(state): State<Arc<AppState>>) -> Json<ExtensionsStatus> {
+     let config = state.config.get();
+     let mgr = &state.extensions;
+@@ -54,6 +71,11 @@ pub async fn list_extensions(State(state): State<Arc<AppState>>) -> Json<Extensi
+             status: mgr.status(ExtensionId::Easytier).await,
+             config: config.extensions.easytier.clone(),
+         },
++        frpc: FrpcInfo {
++            available: mgr.check_available(ExtensionId::Frpc),
++            status: mgr.status(ExtensionId::Frpc).await,
++            config: config.extensions.frpc.clone(),
++        },
+     })
+ }
+ 
+@@ -295,3 +317,72 @@ pub async fn update_easytier_config(
+ 
+     Ok(Json(new_config.extensions.easytier.clone()))
+ }
++
++pub async fn update_frpc_config(
++    State(state): State<Arc<AppState>>,
++    Json(req): Json<FrpcConfigUpdate>,
++) -> Result<Json<FrpcConfig>> {
++    let current_config = state.config.get();
++    let was_enabled = current_config.extensions.frpc.enabled;
++    let mut next_frpc = current_config.extensions.frpc.clone();
++
++    if let Some(enabled) = req.enabled {
++        next_frpc.enabled = enabled;
++    }
++    if let Some(ref proxy_name) = req.proxy_name {
++        next_frpc.proxy_name = proxy_name.clone();
++    }
++    if let Some(proxy_type) = req.proxy_type {
++        next_frpc.proxy_type = proxy_type;
++    }
++    if let Some(ref server_addr) = req.server_addr {
++        next_frpc.server_addr = server_addr.clone();
++    }
++    if let Some(server_port) = req.server_port {
++        next_frpc.server_port = server_port;
++    }
++    if let Some(ref token) = req.token {
++        next_frpc.token = token.clone();
++    }
++    if let Some(ref local_ip) = req.local_ip {
++        next_frpc.local_ip = local_ip.clone();
++    }
++    if let Some(local_port) = req.local_port {
++        next_frpc.local_port = local_port;
++    }
++    if req.remote_port.is_some() {
++        next_frpc.remote_port = req.remote_port.unwrap_or(None);
++    }
++    if req.custom_domain.is_some() {
++        next_frpc.custom_domain = req.custom_domain.unwrap_or(None);
++    }
++    if let Some(tls) = req.tls {
++        next_frpc.tls = tls;
++    }
++
++    if next_frpc.enabled {
++        validate_frpc_enabled(&next_frpc)?;
++    }
++
++    state
++        .config
++        .update(|config| {
++            config.extensions.frpc = next_frpc.clone();
++        })
++        .await?;
++
++    let new_config = state.config.get();
++    let is_enabled = new_config.extensions.frpc.enabled;
++
++    if was_enabled && !is_enabled {
++        state.extensions.stop(ExtensionId::Frpc).await.ok();
++    } else if !was_enabled && is_enabled && state.extensions.check_available(ExtensionId::Frpc) {
++        state
++            .extensions
++            .start(ExtensionId::Frpc, &new_config.extensions)
++            .await
++            .ok();
++    }
++
++    Ok(Json(new_config.extensions.frpc.clone()))
++}
+diff --git a/src/web/routes.rs b/src/web/routes.rs
+index ed43e80b..e2deddfb 100644
+--- a/src/web/routes.rs
++++ b/src/web/routes.rs
+@@ -205,6 +205,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
+             "/extensions/easytier/config",
+             patch(handlers::extensions::update_easytier_config),
+         )
++        .route(
++            "/extensions/frpc/config",
++            patch(handlers::extensions::update_frpc_config),
++        )
+         // Terminal (ttyd) reverse proxy - WebSocket and HTTP
+         .route("/terminal", get(handlers::terminal::terminal_index))
+         .route("/terminal/", get(handlers::terminal::terminal_index))
+diff --git a/web/src/api/config.ts b/web/src/api/config.ts
+index 3a9eb834..243a123b 100644
+--- a/web/src/api/config.ts
++++ b/web/src/api/config.ts
+@@ -24,6 +24,8 @@ import type {
+   GostcConfigUpdate,
+   EasytierConfig,
+   EasytierConfigUpdate,
++  FrpcConfig,
++  FrpcConfigUpdate,
+   WebConfigResponse,
+   WebConfigUpdate,
+ } from '@/types/generated'
+@@ -159,6 +161,12 @@ export const extensionsApi = {
+       method: 'PATCH',
+       body: JSON.stringify(config),
+     }),
++
++  updateFrpc: (config: FrpcConfigUpdate) =>
++    request<FrpcConfig>('/extensions/frpc/config', {
++      method: 'PATCH',
++      body: JSON.stringify(config),
++    }),
+ }
+ 
+ export interface RustDeskConfigResponse {
+diff --git a/web/src/i18n/en-US.ts b/web/src/i18n/en-US.ts
+index a2342dee..9332410a 100644
+--- a/web/src/i18n/en-US.ts
++++ b/web/src/i18n/en-US.ts
+@@ -987,6 +987,27 @@ export default {
+       virtualIp: 'Virtual IP',
+       virtualIpHint: 'Leave empty for DHCP, or specify with CIDR (e.g., 10.0.0.1/24)',
+     },
++    frpc: {
++      title: 'FRP Client',
++      desc: 'NAT penetration via FRP (frpc)',
++      proxyType: 'Proxy Type',
++      proxyName: 'Proxy Name',
++      proxyNamePlaceholder: 'my-proxy',
++      proxyNameRequired: 'Enter a proxy name',
++      serverAddr: 'Server Address',
++      serverAddrPlaceholder: 'frps.example.com',
++      serverAddrRequired: 'Enter the FRP server address',
++      serverPort: 'Server Port',
++      token: 'Token',
++      tokenRequired: 'Enter the FRP authentication token',
++      localIp: 'Local IP',
++      localPort: 'Local Port',
++      remotePort: 'Remote Port',
++      remotePortHint: 'Optional. Random if not specified',
++      customDomain: 'Custom Domain',
++      customDomainPlaceholder: 'example.com',
++      tls: 'Enable TLS',
++    },
+     rustdesk: {
+       title: 'RustDesk Remote',
+       desc: 'Remote access via RustDesk client',
+diff --git a/web/src/i18n/zh-CN.ts b/web/src/i18n/zh-CN.ts
+index 61ae4353..ebd2fe6e 100644
+--- a/web/src/i18n/zh-CN.ts
++++ b/web/src/i18n/zh-CN.ts
+@@ -986,6 +986,27 @@ export default {
+       virtualIp: '虚拟 IP',
+       virtualIpHint: '留空则自动分配，手动指定需包含网段（如 10.0.0.1/24）',
+     },
++    frpc: {
++      title: 'FRP 客户端',
++      desc: '通过 FRP (frpc) 实现内网穿透',
++      proxyType: '代理类型',
++      proxyName: '代理名称',
++      proxyNamePlaceholder: 'my-proxy',
++      proxyNameRequired: '请填写代理名称',
++      serverAddr: '服务器地址',
++      serverAddrPlaceholder: 'frps.example.com',
++      serverAddrRequired: '请填写 FRP 服务器地址',
++      serverPort: '服务器端口',
++      token: 'Token 密钥',
++      tokenRequired: '请填写 FRP 认证 Token',
++      localIp: '本地 IP',
++      localPort: '本地端口',
++      remotePort: '远程端口',
++      remotePortHint: '可选，不填则随机分配',
++      customDomain: '自定义域名',
++      customDomainPlaceholder: 'example.com',
++      tls: '启用 TLS',
++    },
+     rustdesk: {
+       title: 'RustDesk 远程',
+       desc: '使用 RustDesk 客户端进行远程访问',
+diff --git a/web/src/types/generated.ts b/web/src/types/generated.ts
+index 133c8339..2441f435 100644
+--- a/web/src/types/generated.ts
++++ b/web/src/types/generated.ts
+@@ -179,6 +179,7 @@ export interface ExtensionsConfig {
+ 	ttyd: TtydConfig;
+ 	gostc: GostcConfig;
+ 	easytier: EasytierConfig;
++	frpc: FrpcConfig;
+ }
+ 
+ export interface RustDeskConfig {
+@@ -295,10 +296,55 @@ export interface ExtensionInfo {
+ 	status: ExtensionStatus;
+ }
+ 
++export enum FrpProxyType {
++	Tcp = "tcp",
++	Udp = "udp",
++	Http = "http",
++	Https = "https",
++	Stcp = "stcp",
++	Sudp = "sudp",
++	Xtcp = "xtcp",
++}
++
++export interface FrpcConfig {
++	enabled: boolean;
++	proxy_name: string;
++	proxy_type: FrpProxyType;
++	server_addr: string;
++	server_port: number;
++	token: string;
++	local_ip: string;
++	local_port: number;
++	remote_port?: number;
++	custom_domain?: string;
++	tls: boolean;
++}
++
++export interface FrpcInfo {
++	available: boolean;
++	status: ExtensionStatus;
++	config: FrpcConfig;
++}
++
++export interface FrpcConfigUpdate {
++	enabled?: boolean;
++	proxy_name?: string;
++	proxy_type?: FrpProxyType;
++	server_addr?: string;
++	server_port?: number;
++	token?: string;
++	local_ip?: string;
++	local_port?: number;
++	remote_port?: number | null;
++	custom_domain?: string | null;
++	tls?: boolean;
++}
++
+ export enum ExtensionId {
+ 	Ttyd = "ttyd",
+ 	Gostc = "gostc",
+ 	Easytier = "easytier",
++	Frpc = "frpc",
+ }
+ 
+ export interface ExtensionLogs {
+@@ -322,6 +368,7 @@ export interface ExtensionsStatus {
+ 	ttyd: TtydInfo;
+ 	gostc: GostcInfo;
+ 	easytier: EasytierInfo;
++	frpc: FrpcInfo;
+ }
+ 
+ export interface GostcConfigUpdate {
+diff --git a/web/src/views/SettingsView.vue b/web/src/views/SettingsView.vue
+index 2401a623..922ff1fd 100644
+--- a/web/src/views/SettingsView.vue
++++ b/web/src/views/SettingsView.vue
+@@ -43,6 +43,7 @@ import type {
+   OtgHidProfile,
+   OtgHidFunctions,
+ } from '@/types/generated'
++import { FrpProxyType } from '@/types/generated'
+ import { formatFpsLabel, toConfigFps } from '@/lib/fps'
+ import { useClipboard } from '@/composables/useClipboard'
+ import { getVideoFormatState } from '@/lib/video-format-support'
+@@ -315,11 +316,13 @@ const extensionLogs = ref<Record<string, string[]>>({
+   ttyd: [],
+   gostc: [],
+   easytier: [],
++  frpc: [],
+ })
+ const showLogs = ref<Record<string, boolean>>({
+   ttyd: false,
+   gostc: false,
+   easytier: false,
++  frpc: false,
+ })
+ 
+ const showTerminalDialog = ref(false)
+@@ -328,6 +331,19 @@ const extConfig = ref({
+   ttyd: { enabled: false, shell: '/bin/bash' },
+   gostc: { enabled: false, addr: '', key: '', tls: true },
+   easytier: { enabled: false, network_name: '', network_secret: '', peer_urls: [] as string[], virtual_ip: '' },
++  frpc: {
++    enabled: false,
++    proxy_name: '',
++    proxy_type: 'tcp' as string,
++    server_addr: '',
++    server_port: 7000,
++    token: '',
++    local_ip: '127.0.0.1',
++    local_port: 8080,
++    remote_port: undefined as number | undefined,
++    custom_domain: undefined as string | undefined,
++    tls: true,
++  },
+ })
+ 
+ const gostcValidationMessage = computed(() => {
+@@ -341,6 +357,23 @@ const easytierValidationMessage = computed(() => {
+   return ''
+ })
+ 
++const frpcValidationMessage = computed(() => {
++  if (!extConfig.value.frpc.proxy_name?.trim()) return t('extensions.frpc.proxyNameRequired')
++  if (!extConfig.value.frpc.server_addr?.trim()) return t('extensions.frpc.serverAddrRequired')
++  if (!extConfig.value.frpc.token) return t('extensions.frpc.tokenRequired')
++  return ''
++})
++
++const showFrpcRemotePort = computed(() => {
++  const t = extConfig.value.frpc.proxy_type
++  return t === 'tcp' || t === 'udp' || t === 'stcp' || t === 'sudp' || t === 'xtcp'
++})
++
++const showFrpcCustomDomain = computed(() => {
++  const t = extConfig.value.frpc.proxy_type
++  return t === 'http' || t === 'https'
++})
++
+ const rustdeskConfig = ref<RustDeskConfigResponse | null>(null)
+ const rustdeskStatus = ref<RustDeskStatusResponse | null>(null)
+ const rustdeskPassword = ref<RustDeskPasswordResponse | null>(null)
+@@ -1373,6 +1406,20 @@ async function loadExtensions() {
+         peer_urls: easytier.peer_urls || [],
+         virtual_ip: easytier.virtual_ip || '',
+       }
++      const frpc = extensions.value.frpc.config
++      extConfig.value.frpc = {
++        enabled: frpc.enabled,
++        proxy_name: frpc.proxy_name,
++        proxy_type: frpc.proxy_type,
++        server_addr: frpc.server_addr,
++        server_port: frpc.server_port,
++        token: frpc.token,
++        local_ip: frpc.local_ip,
++        local_port: frpc.local_port,
++        remote_port: frpc.remote_port ?? undefined,
++        custom_domain: frpc.custom_domain ?? undefined,
++        tls: frpc.tls,
++      }
+     }
+   } catch {
+   } finally {
+@@ -1380,8 +1427,8 @@ async function loadExtensions() {
+   }
+ }
+ 
+-async function startExtension(id: 'ttyd' | 'gostc' | 'easytier') {
+-  if ((id === 'gostc' || id === 'easytier') && !validateExtensionConfig(id)) return
++async function startExtension(id: 'ttyd' | 'gostc' | 'easytier' | 'frpc') {
++  if ((id === 'gostc' || id === 'easytier' || id === 'frpc') && !validateExtensionConfig(id)) return
+ 
+   try {
+     await extensionsApi.start(id)
+@@ -1390,7 +1437,7 @@ async function startExtension(id: 'ttyd' | 'gostc' | 'easytier') {
+   }
+ }
+ 
+-async function stopExtension(id: 'ttyd' | 'gostc' | 'easytier') {
++async function stopExtension(id: 'ttyd' | 'gostc' | 'easytier' | 'frpc') {
+   try {
+     await extensionsApi.stop(id)
+     await loadExtensions()
+@@ -1398,7 +1445,7 @@ async function stopExtension(id: 'ttyd' | 'gostc' | 'easytier') {
+   }
+ }
+ 
+-async function refreshExtensionLogs(id: 'ttyd' | 'gostc' | 'easytier') {
++async function refreshExtensionLogs(id: 'ttyd' | 'gostc' | 'easytier' | 'frpc') {
+   try {
+     const result = await extensionsApi.logs(id, 100)
+     extensionLogs.value[id] = result.logs
+@@ -1406,8 +1453,8 @@ async function refreshExtensionLogs(id: 'ttyd' | 'gostc' | 'easytier') {
+   }
+ }
+ 
+-async function saveExtensionConfig(id: 'ttyd' | 'gostc' | 'easytier') {
+-  if ((id === 'gostc' || id === 'easytier') && extConfig.value[id].enabled && !validateExtensionConfig(id)) return
++async function saveExtensionConfig(id: 'ttyd' | 'gostc' | 'easytier' | 'frpc') {
++  if ((id === 'gostc' || id === 'easytier' || id === 'frpc') && extConfig.value[id].enabled && !validateExtensionConfig(id)) return
+ 
+   loading.value = true
+   try {
+@@ -1417,6 +1464,20 @@ async function saveExtensionConfig(id: 'ttyd' | 'gostc' | 'easytier') {
+       await extensionsApi.updateGostc(extConfig.value.gostc)
+     } else if (id === 'easytier') {
+       await extensionsApi.updateEasytier(extConfig.value.easytier)
++    } else if (id === 'frpc') {
++      await extensionsApi.updateFrpc({
++        enabled: extConfig.value.frpc.enabled,
++        proxy_name: extConfig.value.frpc.proxy_name,
++        proxy_type: extConfig.value.frpc.proxy_type as FrpProxyType,
++        server_addr: extConfig.value.frpc.server_addr,
++        server_port: extConfig.value.frpc.server_port,
++        token: extConfig.value.frpc.token,
++        local_ip: extConfig.value.frpc.local_ip,
++        local_port: extConfig.value.frpc.local_port,
++        remote_port: extConfig.value.frpc.remote_port ?? undefined,
++        custom_domain: extConfig.value.frpc.custom_domain ?? undefined,
++        tls: extConfig.value.frpc.tls,
++      })
+     }
+     await loadExtensions()
+     saved.value = true
+@@ -1662,10 +1723,12 @@ function showValidationError(message: string): boolean {
+   return false
+ }
+ 
+-function validateExtensionConfig(id: 'gostc' | 'easytier'): boolean {
++function validateExtensionConfig(id: 'gostc' | 'easytier' | 'frpc'): boolean {
+   const message = id === 'gostc'
+     ? gostcValidationMessage.value
+-    : easytierValidationMessage.value
++    : id === 'easytier'
++    ? easytierValidationMessage.value
++    : frpcValidationMessage.value
+ 
+   return !message || showValidationError(message)
+ }
+@@ -3982,6 +4045,153 @@ watch(isWindows, () => {
+                 <Loader2 v-if="loading" class="h-4 w-4 mr-2 animate-spin" /><Check v-else-if="saved" class="h-4 w-4 mr-2" /><Save v-else class="h-4 w-4 mr-2" />{{ loading ? t('actionbar.applying') : saved ? t('common.success') : t('common.save') }}
+               </Button>
+             </div>
++            <Card>
++              <CardHeader>
++                <div class="flex items-center justify-between">
++                  <div class="space-y-1.5">
++                    <CardTitle>{{ t('extensions.frpc.title') }}</CardTitle>
++                    <CardDescription>{{ t('extensions.frpc.desc') }}</CardDescription>
++                  </div>
++                  <Badge :variant="extensions?.frpc?.available ? 'default' : 'destructive'">
++                    {{ extensions?.frpc?.available ? t('extensions.available') : t('extensions.unavailable') }}
++                  </Badge>
++                </div>
++              </CardHeader>
++              <CardContent class="space-y-4">
++                <div v-if="!extensions?.frpc?.available" class="text-sm text-muted-foreground bg-muted p-3 rounded-md">
++                  {{ t('extensions.binaryNotFound', { path: isWindows ? 'frpc.exe' : '/usr/bin/frpc' }) }}
++                </div>
++                <template v-else>
++                  <!-- Status and controls -->
++                  <div class="flex items-center justify-between">
++                    <div class="flex items-center gap-2">
++                      <div :class="['w-2 h-2 rounded-full', getExtStatusClass(extensions?.frpc?.status)]" />
++                      <span class="text-sm">{{ getExtStatusText(extensions?.frpc?.status) }}</span>
++                    </div>
++                    <div class="flex gap-2">
++                      <Button
++                        v-if="!isExtRunning(extensions?.frpc?.status)"
++                        size="sm"
++                        @click="startExtension('frpc')"
++                        :disabled="extensionsLoading || !!frpcValidationMessage"
++                      >
++                        <Play class="h-4 w-4 mr-1" />
++                        {{ t('extensions.start') }}
++                      </Button>
++                      <Button
++                        v-else
++                        size="sm"
++                        variant="outline"
++                        @click="stopExtension('frpc')"
++                        :disabled="extensionsLoading"
++                      >
++                        <Square class="h-4 w-4 mr-1" />
++                        {{ t('extensions.stop') }}
++                      </Button>
++                    </div>
++                  </div>
++                  <Separator />
++                  <!-- Config -->
++                  <div class="grid gap-4">
++                    <div class="flex items-center justify-between">
++                      <Label>{{ t('extensions.autoStart') }}</Label>
++                      <Switch v-model="extConfig.frpc.enabled" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                    </div>
++                    <!-- Proxy Type -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.proxyType') }}</Label>
++                      <div class="sm:col-span-3">
++                        <RadioGroup v-model="extConfig.frpc.proxy_type" :disabled="isExtRunning(extensions?.frpc?.status)" class="grid grid-cols-4 gap-2">
++                          <div v-for="pt in ['tcp','udp','http','https','stcp','sudp','xtcp']" :key="pt" class="flex items-center gap-1.5">
++                            <RadioGroupItem :value="pt" :id="'frpc-type-'+pt" />
++                            <Label :for="'frpc-type-'+pt" class="text-sm uppercase">{{ pt }}</Label>
++                          </div>
++                        </RadioGroup>
++                      </div>
++                    </div>
++                    <!-- Proxy Name -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.proxyName') }}</Label>
++                      <div class="sm:col-span-3 space-y-1">
++                        <Input v-model="extConfig.frpc.proxy_name" :placeholder="t('extensions.frpc.proxyNamePlaceholder')" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                        <p v-if="extConfig.frpc.enabled && !extConfig.frpc.proxy_name?.trim()" class="text-xs text-destructive">{{ t('extensions.frpc.proxyNameRequired') }}</p>
++                      </div>
++                    </div>
++                    <!-- Server Address + Port -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.serverAddr') }}</Label>
++                      <div class="sm:col-span-3 space-y-1">
++                        <div class="flex gap-2">
++                          <Input v-model="extConfig.frpc.server_addr" :placeholder="t('extensions.frpc.serverAddrPlaceholder')" class="flex-1" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                          <Input v-model.number="extConfig.frpc.server_port" type="number" class="w-24" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                        </div>
++                        <p v-if="extConfig.frpc.enabled && !extConfig.frpc.server_addr?.trim()" class="text-xs text-destructive">{{ t('extensions.frpc.serverAddrRequired') }}</p>
++                      </div>
++                    </div>
++                    <!-- Token -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.token') }}</Label>
++                      <div class="sm:col-span-3 space-y-1">
++                        <Input v-model="extConfig.frpc.token" type="password" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                        <p v-if="extConfig.frpc.enabled && !extConfig.frpc.token" class="text-xs text-destructive">{{ t('extensions.frpc.tokenRequired') }}</p>
++                      </div>
++                    </div>
++                    <!-- Local IP + Port -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.localIp') }}</Label>
++                      <div class="sm:col-span-3">
++                        <div class="flex gap-2">
++                          <Input v-model="extConfig.frpc.local_ip" class="flex-1" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                          <Input v-model.number="extConfig.frpc.local_port" type="number" class="w-24" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                        </div>
++                      </div>
++                    </div>
++                    <!-- Remote Port (conditional) -->
++                    <div v-if="showFrpcRemotePort" class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.remotePort') }}</Label>
++                      <div class="sm:col-span-3 space-y-1">
++                        <Input v-model.number="extConfig.frpc.remote_port" type="number" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                        <p class="text-xs text-muted-foreground">{{ t('extensions.frpc.remotePortHint') }}</p>
++                      </div>
++                    </div>
++                    <!-- Custom Domain (conditional) -->
++                    <div v-if="showFrpcCustomDomain" class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.customDomain') }}</Label>
++                      <div class="sm:col-span-3">
++                        <Input v-model="extConfig.frpc.custom_domain" :placeholder="t('extensions.frpc.customDomainPlaceholder')" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                      </div>
++                    </div>
++                    <!-- TLS -->
++                    <div class="grid gap-2 sm:grid-cols-4 sm:items-center">
++                      <Label class="sm:text-right">{{ t('extensions.frpc.tls') }}</Label>
++                      <div class="sm:col-span-3">
++                        <Switch v-model="extConfig.frpc.tls" :disabled="isExtRunning(extensions?.frpc?.status)" />
++                      </div>
++                    </div>
++                  </div>
++                  <!-- Logs -->
++                  <div class="space-y-2">
++                    <button type="button" @click="showLogs.frpc = !showLogs.frpc; if (showLogs.frpc) refreshExtensionLogs('frpc')" class="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
++                      <ChevronRight :class="['h-4 w-4 transition-transform', showLogs.frpc ? 'rotate-90' : '']" />
++                      {{ t('extensions.viewLogs') }}
++                    </button>
++                    <div v-if="showLogs.frpc" class="space-y-2">
++                      <pre class="p-3 bg-muted rounded-md text-xs max-h-48 overflow-auto font-mono">{{ (extensionLogs.frpc || []).join('\n') || t('extensions.noLogs') }}</pre>
++                      <Button variant="ghost" size="sm" @click="refreshExtensionLogs('frpc')">
++                        <RefreshCw class="h-3 w-3 mr-1" />
++                        {{ t('common.refresh') }}
++                      </Button>
++                    </div>
++                  </div>
++                </template>
++              </CardContent>
++            </Card>
++            <!-- Save button -->
++            <div v-if="extensions?.frpc?.available" class="flex justify-end">
++              <Button :disabled="loading || isExtRunning(extensions?.frpc?.status)" @click="saveExtensionConfig('frpc')">
++                <Loader2 v-if="loading" class="h-4 w-4 mr-2 animate-spin" /><Check v-else-if="saved" class="h-4 w-4 mr-2" /><Save v-else class="h-4 w-4 mr-2" />{{ loading ? t('actionbar.applying') : saved ? t('common.success') : t('common.save') }}
++              </Button>
++            </div>
+           </div>
+ 
+           <!-- RTSP Section -->

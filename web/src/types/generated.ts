@@ -179,6 +179,7 @@ export interface ExtensionsConfig {
 	ttyd: TtydConfig;
 	gostc: GostcConfig;
 	easytier: EasytierConfig;
+	frpc: FrpcConfig;
 }
 
 export interface RustDeskConfig {
@@ -295,10 +296,55 @@ export interface ExtensionInfo {
 	status: ExtensionStatus;
 }
 
+export enum FrpProxyType {
+	Tcp = "tcp",
+	Udp = "udp",
+	Http = "http",
+	Https = "https",
+	Stcp = "stcp",
+	Sudp = "sudp",
+	Xtcp = "xtcp",
+}
+
+export interface FrpcConfig {
+	enabled: boolean;
+	proxy_name: string;
+	proxy_type: FrpProxyType;
+	server_addr: string;
+	server_port: number;
+	token: string;
+	local_ip: string;
+	local_port: number;
+	remote_port?: number;
+	custom_domain?: string;
+	tls: boolean;
+}
+
+export interface FrpcInfo {
+	available: boolean;
+	status: ExtensionStatus;
+	config: FrpcConfig;
+}
+
+export interface FrpcConfigUpdate {
+	enabled?: boolean;
+	proxy_name?: string;
+	proxy_type?: FrpProxyType;
+	server_addr?: string;
+	server_port?: number;
+	token?: string;
+	local_ip?: string;
+	local_port?: number;
+	remote_port?: number | null;
+	custom_domain?: string | null;
+	tls?: boolean;
+}
+
 export enum ExtensionId {
 	Ttyd = "ttyd",
 	Gostc = "gostc",
 	Easytier = "easytier",
+	Frpc = "frpc",
 }
 
 export interface ExtensionLogs {
@@ -322,6 +368,7 @@ export interface ExtensionsStatus {
 	ttyd: TtydInfo;
 	gostc: GostcInfo;
 	easytier: EasytierInfo;
+	frpc: FrpcInfo;
 }
 
 export interface GostcConfigUpdate {

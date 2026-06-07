@@ -10,6 +10,7 @@ pub enum ExtensionId {
     Ttyd,
     Gostc,
     Easytier,
+    Frpc,
 }
 
 impl ExtensionId {
@@ -18,7 +19,7 @@ impl ExtensionId {
     }
 
     pub fn all() -> &'static [ExtensionId] {
-        &[Self::Ttyd, Self::Gostc, Self::Easytier]
+        &[Self::Ttyd, Self::Gostc, Self::Easytier, Self::Frpc]
     }
 }
 
@@ -28,6 +29,7 @@ impl std::fmt::Display for ExtensionId {
             Self::Ttyd => write!(f, "ttyd"),
             Self::Gostc => write!(f, "gostc"),
             Self::Easytier => write!(f, "easytier"),
+            Self::Frpc => write!(f, "frpc"),
         }
     }
 }
@@ -40,6 +42,7 @@ impl std::str::FromStr for ExtensionId {
             "ttyd" => Ok(Self::Ttyd),
             "gostc" => Ok(Self::Gostc),
             "easytier" => Ok(Self::Easytier),
+            "frpc" => Ok(Self::Frpc),
             _ => Err(format!("Unknown extension: {}", s)),
         }
     }
@@ -115,12 +118,78 @@ pub struct EasytierConfig {
 }
 
 #[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrpProxyType {
+    Tcp,
+    Udp,
+    Http,
+    Https,
+    Stcp,
+    Sudp,
+    Xtcp,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FrpcConfig {
+    pub enabled: bool,
+    pub proxy_name: String,
+    pub proxy_type: FrpProxyType,
+    pub server_addr: String,
+    pub server_port: u16,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub token: String,
+    pub local_ip: String,
+    pub local_port: u16,
+    pub remote_port: Option<u16>,
+    pub custom_domain: Option<String>,
+    pub tls: bool,
+}
+
+impl Default for FrpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_name: String::new(),
+            proxy_type: FrpProxyType::Tcp,
+            server_addr: String::new(),
+            server_port: 7000,
+            token: String::new(),
+            local_ip: String::from("127.0.0.1"),
+            local_port: 8080,
+            remote_port: None,
+            custom_domain: None,
+            tls: true,
+        }
+    }
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrpcConfigUpdate {
+    pub enabled: Option<bool>,
+    pub proxy_name: Option<String>,
+    pub proxy_type: Option<FrpProxyType>,
+    pub server_addr: Option<String>,
+    pub server_port: Option<u16>,
+    pub token: Option<String>,
+    pub local_ip: Option<String>,
+    pub local_port: Option<u16>,
+    pub remote_port: Option<Option<u16>>,
+    pub custom_domain: Option<Option<String>>,
+    pub tls: Option<bool>,
+}
+
+#[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ExtensionsConfig {
     pub ttyd: TtydConfig,
     pub gostc: GostcConfig,
     pub easytier: EasytierConfig,
+    pub frpc: FrpcConfig,
 }
 
 #[typeshare]
@@ -156,10 +225,19 @@ pub struct EasytierInfo {
 
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrpcInfo {
+    pub available: bool,
+    pub status: ExtensionStatus,
+    pub config: FrpcConfig,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionsStatus {
     pub ttyd: TtydInfo,
     pub gostc: GostcInfo,
     pub easytier: EasytierInfo,
+    pub frpc: FrpcInfo,
 }
 
 #[typeshare]
